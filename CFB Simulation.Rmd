@@ -1,0 +1,1411 @@
+---
+title: "4800 Project Checkpoint 1"
+author: "Max St John, Nick Mills, Jay Ralyea"
+date: "3/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+```
+
+
+```{r}
+# Loading the data and Splitting it into Run and Pass Plays
+CFB_data_load <- read.csv("/Users/maxstjohn/Desktop/2021 Spring Semester/STAT 4800/2019 PFF All Plays.csv")
+
+# Setting incomplete yards gained to 0, standardizing field position, and filtering out "No Plays"
+CFB_data<- CFB_data_load %>%
+   mutate(pff_GAINLOSS = ifelse(pff_PASSRESULT == "INCOMPLETE" | pff_PASSRESULT == "BATTED PASS" | 
+                                 pff_PASSRESULT == "HIT AS THREW" | pff_PASSRESULT == "SPIKE" |
+           pff_PASSRESULT == "THROWN AWAY", 0, pff_GAINLOSS)) %>%
+  mutate(pff_FIELDPOSITION = ifelse(pff_FIELDPOSITION < 0, abs(pff_FIELDPOSITION), 100 - pff_FIELDPOSITION),
+         pff_PLAYENDFIELDPOSITION = ifelse(pff_PLAYENDFIELDPOSITION < 0, abs(pff_PLAYENDFIELDPOSITION), 100 -
+                                             pff_PLAYENDFIELDPOSITION)) %>%
+  filter(pff_NOPLAY == 0)
+
+# Run play data
+Run_plays<-CFB_data[which(CFB_data$pff_RUNPASS == "R"),]
+# Pass Play Data
+Pass_plays<- CFB_data %>%
+  filter(pff_RUNPASS == "P")
+Pass_plays<- Pass_plays[-which(Pass_plays$pff_PASSRESULT == ""),]
+```
+
+
+```{r}
+# plotting the distribution of Pass plays, Run plays, and Both
+P_R <- bind_rows(Pass_plays,Run_plays)
+P_R <- P_R %>%
+  mutate(pff_FIELDPOSITION = ifelse(pff_FIELDPOSITION < 0, abs(pff_FIELDPOSITION), 100 - pff_FIELDPOSITION))
+
+Total_YG <- ggplot(P_R, aes(x = pff_GAINLOSS)) + geom_histogram(binwidth = 1)+
+  xlim(-20,100)
+Total_YG
+
+Yards_Gain_run <- ggplot(Run_plays, aes(x=pff_GAINLOSS)) + geom_histogram(binwidth = 1) + xlim(-20,100)
+Yards_Gain_run
+
+Yards_Gain_pass <- ggplot(Pass_plays, aes(x=pff_GAINLOSS)) + geom_histogram(binwidth = 1) + 
+  xlim(-20,100)
+Yards_Gain_pass
+```
+
+```{r}
+# Interception Data for non-redzone plays
+interception_Plays = Pass_plays %>%
+  filter(pff_PASSRESULT == "INTERCEPTION", pff_FIELDPOSITION < 80) %>%
+  select(pff_FIELDPOSITION, pff_PLAYID, pff_TOUCHDOWN)
+
+allPlaysFieldPosition = CFB_data %>%
+  select(pff_PREVIOUSPFFPLAYID, pff_FIELDPOSITION) %>%
+  rename(afterIntFP = pff_FIELDPOSITION)
+
+# Finding Int return lengths by joining interception plays with the following play
+intReturnLength = inner_join(interception_Plays,
+               allPlaysFieldPosition,
+               by = c("pff_PLAYID" = "pff_PREVIOUSPFFPLAYID")) %>%
+  rowwise() %>%
+  mutate(yards = ifelse(pff_TOUCHDOWN != "", pff_FIELDPOSITION, pff_FIELDPOSITION - (100- afterIntFP)))
+
+```
+
+```{r}
+# Mixture Model for Pass Plays outside of RZ
+
+Pass_plays = Pass_plays %>%
+  filter(pff_FIELDPOSITION <80)
+
+
+
+# Breaking into Sacks, Completions, Incompletions, Interceptions
+Sack_plays <- Pass_plays %>%
+  filter(pff_PASSRESULT == "SACK")
+Prob_sack <- nrow(Sack_plays)/nrow(Pass_plays)
+Sack_plays_YG <- ggplot(Sack_plays, aes(x=pff_GAINLOSS)) + geom_histogram(binwidth = 1)
+Sack_plays_YG
+
+Incomplete_plays<- Pass_plays %>%
+  filter(pff_PASSRESULT == "INCOMPLETE" | pff_PASSRESULT == "BATTED PASS" | 
+           pff_PASSRESULT == "HIT AS THREW" | pff_PASSRESULT == "SPIKE" |
+           pff_PASSRESULT == "THROWN AWAY")
+Prob_incomplete<-nrow(Incomplete_plays)/nrow(Pass_plays)
+
+Incomplete_plays_YG <- ggplot(Incomplete_plays, aes(x=pff_GAINLOSS)) + geom_histogram(binwidth = 1)
+Incomplete_plays_YG
+
+Complete_plays <- Pass_plays %>%
+  filter(pff_PASSRESULT == "COMPLETE" | pff_PASSRESULT == "RUN" | pff_PASSRESULT == "LATERAL")
+Prob_Complete<-nrow(Complete_plays)/nrow(Pass_plays)
+Complete_plays_YG <- ggplot(Complete_plays, aes(x=pff_GAINLOSS)) + geom_histogram(binwidth = 1)
+Complete_plays_YG
+
+Interception_plays <- Pass_plays %>%
+  filter(pff_PASSRESULT == "INTERCEPTION")
+Prob_Int<-nrow(Interception_plays)/nrow(Pass_plays)
+
+# Mixture Model for complete plays (EM)
+plot_mix_comps <- function(x, mu, sigma, lam) {
+  lam * dnorm(x, mu, sigma)
+}
+
+
+library(mixtools)
+set.seed(1)
+YTG_Complete <- Complete_plays$pff_GAINLOSS
+mixmdl <- normalmixEM(YTG_Complete, k = 4)
+
+# Complete Plays MM Plot
+Complete_MM<-data.frame(x = mixmdl$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl$mu[1], mixmdl$sigma[1], lam = mixmdl$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl$mu[2], mixmdl$sigma[2], lam = mixmdl$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl$mu[3], mixmdl$sigma[3], lam = mixmdl$lambda[3]),
+                colour = "green", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl$mu[4], mixmdl$sigma[4], lam = mixmdl$lambda[4]),
+                colour = "purple", lwd = 1.5) +
+  ylab("Density")
+Complete_MM
+
+
+# Mixture Model for Run Plays (EM)
+YTG_Run <- Run_plays$pff_GAINLOSS
+YTG_Run<- na.omit(YTG_Run)
+set.seed(1)
+mixmdl_run <- normalmixEM(YTG_Run, k = 2)
+
+# Run Plays MM Plot
+Run_mm<- data.frame(x = mixmdl_run$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_run$mu[1], mixmdl_run$sigma[1], lam = mixmdl_run$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_run$mu[2], mixmdl_run$sigma[2], lam = mixmdl_run$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+  ylab("Density")
+Run_mm
+
+
+# Mixture Model for Sacks (EM)
+YG_Sacks<-Sack_plays$pff_GAINLOSS
+YG_Sacks<-na.omit(YG_Sacks)
+set.seed(1)
+mixmdl_sacks <- normalmixEM(YG_Sacks, k = 2)
+
+# Sack Plays MM Plot
+Sack_mm<- data.frame(x = mixmdl_sacks$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_sacks$mu[1], mixmdl_sacks$sigma[1], lam = mixmdl_sacks$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_sacks$mu[2], mixmdl_sacks$sigma[2], lam = mixmdl_sacks$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+  ylab("Density")
+Sack_mm
+
+
+
+# Mixture Model for Interceptions (EM)
+Int_return <-intReturnLength$yards
+Int_return<-na.omit(Int_return)
+set.seed(1)
+mixmdl_Int <- normalmixEM(Int_return, k = 3)
+
+# Int MM Plot
+Int_mm<- data.frame(x = mixmdl_Int$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_Int$mu[1], mixmdl_Int$sigma[1], lam = mixmdl_Int$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_Int$mu[2], mixmdl_Int$sigma[2], lam = mixmdl_Int$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+    stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_Int$mu[3], mixmdl_Int$sigma[3], lam = mixmdl_Int$lambda[3]),
+                colour = "green", lwd = 1.5) +
+  ylab("Density")
+Int_mm
+```
+
+```{r}
+# Redzone Plays Data
+RZ_data = CFB_data %>%
+  filter(pff_FIELDPOSITION >=80, pff_KICKRESULT == "")
+
+RZ_Run_plays<-RZ_data[which(RZ_data$pff_RUNPASS == "R"),]
+RZ_Pass_plays<-RZ_data[which(RZ_data$pff_RUNPASS == "P"),]
+RZ_PandR<-bind_rows(RZ_Pass_plays,RZ_Run_plays)
+```
+
+```{r}
+# Interception Data RZ
+interception_PlaysRZ = RZ_Pass_plays %>%
+  filter(pff_PASSRESULT == "INTERCEPTION", pff_FIELDPOSITION >= 80) %>%
+  select(pff_FIELDPOSITION, pff_PLAYID, pff_TOUCHDOWN)
+
+allPlaysFieldPosition = CFB_data %>%
+  select(pff_PREVIOUSPFFPLAYID, pff_FIELDPOSITION) %>%
+  rename(afterIntFP = pff_FIELDPOSITION)
+
+# Finding Int return lengths by joining interception plays with the following play (RZ)
+intReturnLengthRZ = inner_join(interception_PlaysRZ,
+               allPlaysFieldPosition,
+               by = c("pff_PLAYID" = "pff_PREVIOUSPFFPLAYID")) %>%
+  rowwise() %>%
+  mutate(yards = ifelse(pff_TOUCHDOWN != "", pff_FIELDPOSITION, pff_FIELDPOSITION - (100- afterIntFP)))
+```
+
+```{r}
+## Redzone Mixture Models ##
+# Breaking into Sacks, Completions, Incompletions
+RZ_Sack_plays <- RZ_Pass_plays %>%
+  filter(pff_PASSRESULT == "SACK")
+RZ_Prob_sack <- nrow(RZ_Sack_plays)/nrow(RZ_Pass_plays)
+RZ_Sack_plays_YG <- ggplot(RZ_Sack_plays, aes(x=pff_GAINLOSS)) + geom_histogram(binwidth = 1)
+RZ_Sack_plays_YG
+
+RZ_Incomplete_plays<- RZ_Pass_plays %>%
+  filter(pff_PASSRESULT == "INCOMPLETE" | pff_PASSRESULT == "BATTED PASS" | 
+           pff_PASSRESULT == "HIT AS THREW" | pff_PASSRESULT == "SPIKE" |
+           pff_PASSRESULT == "THROWN AWAY")
+RZ_Prob_incomplete<-nrow(RZ_Incomplete_plays)/nrow(RZ_Pass_plays)
+
+RZ_Incomplete_plays_YG <- ggplot(RZ_Incomplete_plays, aes(x=pff_GAINLOSS)) + geom_histogram(binwidth = 1)
+RZ_Incomplete_plays_YG
+
+RZ_Complete_plays <- RZ_Pass_plays %>%
+  filter(pff_PASSRESULT == "COMPLETE" | pff_PASSRESULT == "RUN" | pff_PASSRESULT == "LATERAL")
+RZ_Prob_Complete<-nrow(RZ_Complete_plays)/nrow(RZ_Pass_plays)
+RZ_Complete_plays_YG <- ggplot(RZ_Complete_plays, aes(x=pff_GAINLOSS)) + geom_histogram(binwidth = 1)
+RZ_Complete_plays_YG
+
+RZ_Interception_plays <- RZ_Pass_plays %>%
+  filter(pff_PASSRESULT == "INTERCEPTION")
+RZ_Prob_Int<-nrow(RZ_Interception_plays)/nrow(RZ_Pass_plays)
+
+## Redzone Mixture Models ##
+# Mixture Model for complete plays (EM)
+plot_mix_comps <- function(x, mu, sigma, lam) {
+  lam * dnorm(x, mu, sigma)
+}
+
+#install.packages("mixtools")
+library(mixtools)
+set.seed(1)
+RZ_YTG_Complete <- RZ_Complete_plays$pff_GAINLOSS
+RZ_mixmdl <- normalmixEM(RZ_YTG_Complete, k = 2)
+
+# RZ Completion MM Plot
+RZ_Complete_MM<-data.frame(x = RZ_mixmdl$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(RZ_mixmdl$mu[1], RZ_mixmdl$sigma[1], lam = RZ_mixmdl$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(RZ_mixmdl$mu[2], RZ_mixmdl$sigma[2], lam = RZ_mixmdl$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(RZ_mixmdl$mu[3], RZ_mixmdl$sigma[3], lam = RZ_mixmdl$lambda[3]),
+                colour = "green", lwd = 1.5) +
+  ylab("Density")
+RZ_Complete_MM
+
+
+# Mixture Model for Run Plays RZ (EM)
+RZ_YTG_Run <- RZ_Run_plays$pff_GAINLOSS
+RZ_YTG_Run<- na.omit(RZ_YTG_Run)
+set.seed(1)
+RZ_mixmdl_run <- normalmixEM(RZ_YTG_Run, k = 2)
+
+# RZ Run Play MM Plot
+RZ_Run_mm<- data.frame(x = RZ_mixmdl_run$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(RZ_mixmdl_run$mu[1], RZ_mixmdl_run$sigma[1], lam = RZ_mixmdl_run$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(RZ_mixmdl_run$mu[2], RZ_mixmdl_run$sigma[2], lam = RZ_mixmdl_run$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+  ylab("Density")
+RZ_Run_mm
+
+ 
+
+RZ_mixmdl_run$mu
+RZ_mixmdl_run$sigma
+RZ_mixmdl_run$lambda
+
+# Mixture Model for Sacks RZ (EM)
+RZ_YG_Sacks<-RZ_Sack_plays$pff_GAINLOSS
+RZ_YG_Sacks<-na.omit(YG_Sacks)
+set.seed(1)
+RZ_mixmdl_sacks <- normalmixEM(RZ_YG_Sacks, k = 2)
+
+# RZ Sack MM Plot
+RZ_Sack_mm<- data.frame(x = RZ_mixmdl_sacks$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(RZ_mixmdl_sacks$mu[1], RZ_mixmdl_sacks$sigma[1], lam = RZ_mixmdl_sacks$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(RZ_mixmdl_sacks$mu[2], RZ_mixmdl_sacks$sigma[2], lam = RZ_mixmdl_sacks$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+  ylab("Density")
+RZ_Sack_mm
+
+ 
+
+RZ_mixmdl_sacks$mu
+RZ_mixmdl_sacks$sigma
+RZ_mixmdl_sacks$lambda
+
+# Mixture Model for Interceptions RZ (EM)
+Int_returnRZ <-intReturnLengthRZ$yards
+Int_returnRZ<-na.omit(Int_returnRZ)
+set.seed(1)
+mixmdl_IntRZ <- normalmixEM(Int_returnRZ, k = 2)
+
+# RZ Int MM Plot
+Int_mmRZ<- data.frame(x = mixmdl_IntRZ$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_IntRZ$mu[1], mixmdl_IntRZ$sigma[1], lam = mixmdl_IntRZ$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_IntRZ$mu[2], mixmdl_IntRZ$sigma[2], lam = mixmdl_IntRZ$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+  ylab("Density")
+Int_mmRZ
+
+
+```
+
+```{r}
+### Tree diagram function for Non-Redzone plays ###
+# probabilities of run and pass
+prob_run<-nrow(Run_plays)/nrow(P_R)
+prob_pass<-nrow(Pass_plays)/nrow(P_R)
+
+## functions within Tree diagram function ##
+# Pass or Run function
+Run_or_Pass <- function(){
+  samp <- runif(1,min = 0,max = 1)
+  if(samp >= prob_run){
+    return("Pass")
+  }else{return("Run")}
+}
+
+# Incomplete,Sack, or Complete function
+Incomplete_Complete_or_Sack<-function(){
+  samp <- runif(1,min = 0,max = 1)
+  if(samp <= Prob_sack){
+      YG <- "Sack"
+  }else if(Prob_sack < samp & samp <= (Prob_sack+Prob_incomplete)){
+      YG <- 0  
+  }else if((Prob_sack+Prob_incomplete)< samp & samp <= (Prob_sack+Prob_incomplete+Prob_Int)){
+      YG <- "Interception"
+  }
+  else{
+       YG <- "Complete" 
+  }
+  return(YG)
+}
+
+# Complete Function
+If_Complete<-function(){
+  samp <- runif(1,min = 0,max = 1)
+  if(samp<= mixmdl$lambda[1]){
+    YG <- rnorm(1,mixmdl$mu[1],mixmdl$sigma[1])
+  }else if(mixmdl$lambda[1]< samp & samp <=(mixmdl$lambda[1] + mixmdl$lambda[2])){YG <- rnorm(1,mixmdl$mu[2],mixmdl$sigma[2])
+    }else if((mixmdl$lambda[1]+ mixmdl$lambda[2]) < samp & samp <=(mixmdl$lambda[1] + mixmdl$lambda[2]+ mixmdl$lambda[3])){
+      YG <- rnorm(1,mixmdl$mu[3],mixmdl$sigma[3])
+      }else{
+        YG <-YG <- rnorm(1,mixmdl$mu[4],mixmdl$sigma[4])
+      }
+  return(YG)
+}
+
+# Sack Function
+If_Sack<-function(){
+  samp <- runif(1,min = 0,max = 1)
+  if(samp<= mixmdl_sacks$lambda[1]){
+    YG <- rnorm(1,mixmdl_sacks$mu[1],mixmdl_sacks$sigma[1])
+  }else{
+    YG <- rnorm(1,mixmdl_sacks$mu[2],mixmdl_sacks$sigma[2])
+  }
+  return(YG)
+}
+
+# Interception Function
+If_Int<-function(){
+  samp <- runif(1,min=0,max = 1)
+  if(samp<= mixmdl_Int$lambda[1]){
+    YG <- rnorm(1,mixmdl_Int$mu[1],mixmdl_Int$sigma[1])
+  }else{
+    YG <- rnorm(1,mixmdl_Int$mu[2],mixmdl_Int$sigma[2])
+  }
+  return(YG)
+}
+
+#Run Function
+If_Run<-function(){
+  samp<-runif(1,min = 0,max = 1)
+  if(samp<=mixmdl_run$lambda[1]){
+    YG <- rnorm(1,mixmdl_run$mu[1],mixmdl_run$sigma[1])
+  }else{
+    YG <- rnorm(1,mixmdl_run$mu[2],mixmdl_run$sigma[2])
+  }
+  return(YG)
+}
+
+# Yards Gained Function for any play
+Yards_Gained_function <- function(){
+  samp<-Run_or_Pass()
+  if(samp == "Pass"){
+    YG1 <- Incomplete_Complete_or_Sack()
+    if(is.character(YG1)==T){
+      if (YG1 == "Complete"){
+        YG <-If_Complete()
+        return(YG)
+      }else if(YG1 == "Interception"){
+        # We multiply interception return yards by 1000 to allow us to detect interception plays in our simulation. When an interception occurs, we divide this value back by 1000 to get the true yards gained. 
+        YG <- If_Int()*1000
+        return(YG)
+      }else if (YG1 == "Sack"){
+        YG <- If_Sack()
+        return(YG)
+    }}else{
+      YG <- YG1
+      return(YG)
+  }}else{
+    YG<-If_Run()
+    return(YG)
+      }
+    }
+
+Yards_Gained_function()
+```
+
+```{r}
+#Redzone Yards Gained Function
+
+# RZ Run or Pass
+Prob_RZ_Run <-nrow(RZ_Run_plays)/nrow(RZ_PandR)
+Prob_RZ_Pass <-nrow(RZ_Pass_plays)/nrow(RZ_PandR)
+Run_or_Pass_RZ <- function(){
+  samp <- runif(1,min = 0,max = 1)
+  if(samp >= Prob_RZ_Run){
+    return("Pass")
+  }else{return("Run")}
+}
+
+#RZ If Incomplete, Complete, or Sack
+Prob_Sack_RZ<-nrow(RZ_Sack_plays)/nrow(RZ_Pass_plays)
+Prob_incomplete_RZ<-nrow(RZ_Incomplete_plays)/nrow(RZ_Pass_plays)
+Prob_Complete_RZ<-nrow(RZ_Complete_plays)/nrow(RZ_Pass_plays)
+
+Incomplete_Complete_or_Sack_RZ<-function(){
+  samp <- runif(1,min = 0,max = 1)
+  if(samp <= Prob_Sack_RZ){
+      YG <- "Sack"
+  }else if(samp > Prob_Sack_RZ & samp <= (Prob_Sack_RZ + Prob_incomplete_RZ)){
+      YG <- 0  
+  }else if((Prob_Sack_RZ + Prob_incomplete_RZ) < samp & samp <= (Prob_Sack_RZ + Prob_incomplete_RZ + RZ_Prob_Int)){
+      YG <- "Interception"
+  }
+  else{
+      YG <- "Complete" 
+  }
+  return(YG)
+}
+
+# RZ if Complete
+If_Complete_RZ<- function(){
+  samp <- runif(1,min = 0,max = 1)
+  if(samp <= RZ_mixmdl$lambda[1]){
+    YG <- rnorm(1,RZ_mixmdl$mu[1],RZ_mixmdl$sigma[1])
+      }else{
+        YG<-rnorm(1,RZ_mixmdl$mu[2],RZ_mixmdl$sigma[2])
+      }
+  return(YG)
+}
+
+# RZ if Sack
+If_Sack_RZ<-function(){
+    samp <- runif(1,min = 0,max = 1)
+  if(samp<= RZ_mixmdl_sacks$lambda[1]){
+    YG <- rnorm(1,RZ_mixmdl_sacks$mu[1],RZ_mixmdl_sacks$sigma[1])
+  }else{
+    YG <- rnorm(1,RZ_mixmdl_sacks$mu[2],RZ_mixmdl_sacks$sigma[2])
+  }
+  return(YG)
+}
+
+#RZ If Run Function
+If_Run_RZ<-function(){
+  samp<-runif(1,min = 0,max = 1)
+  if(samp<=RZ_mixmdl_run$lambda[1]){
+    YG <- rnorm(1,RZ_mixmdl_run$mu[1],RZ_mixmdl_run$sigma[1])
+  }else{
+    YG <- rnorm(1,RZ_mixmdl_run$mu[2],RZ_mixmdl_run$sigma[2])
+  }
+  return(YG)
+}
+
+# RZ Interception Function
+If_Int_RZ<-function(){
+  samp <- runif(1,min=0,max = 1)
+  if(samp<= mixmdl_IntRZ$lambda[1]){
+    YG <- rnorm(1,mixmdl_IntRZ$mu[1],mixmdl_IntRZ$sigma[1])
+  }else{
+    YG <- rnorm(1,mixmdl_IntRZ$mu[2],mixmdl_IntRZ$sigma[2])
+  }
+  return(YG)
+}
+
+# Final RZ Yards Gained Function
+Yards_Gained_function_RZ <- function(){
+  samp<-Run_or_Pass_RZ()
+  if(samp == "Pass"){
+    YG1 <- Incomplete_Complete_or_Sack_RZ()
+    if(YG1 == "Complete"){
+      YG <-If_Complete_RZ()
+      return(YG)
+    }else if(YG1 == "Interception"){
+      YG <- (If_Int_RZ()*1000)
+      return(YG)
+    }else if (YG1 == "Sack"){
+        YG <- If_Sack_RZ()
+        return(YG)
+        }else{
+          return(YG1)
+  }}else{
+    YG<-If_Run_RZ()
+    return(YG)
+  }
+}
+```
+
+```{r}
+# Probability Model for making a Field Goal based off of Field Position
+
+# Filter Kicking Data to FG attempts
+fieldGoalData <- CFB_data %>%
+  dplyr::select(pff_GAMEID, pff_PLAYID,pff_OFFTEAM, pff_DEFTEAM, pff_QUARTER,pff_FIELDPOSITION, pff_DRIVE, pff_DRIVEPLAY, pff_DOWN, pff_DISTANCE, pff_DRIVEENDEVENT, pff_DRIVEENDPLAYNUMBER, pff_GARBAGETIME, pff_KICKRESULT) %>%
+  mutate(pff_KICKRESULT = as.character(pff_KICKRESULT)) %>% 
+  rowwise() %>%
+  mutate(fieldGoalMake = ifelse("MADE" %in% unlist(strsplit(pff_KICKRESULT, " ")), 1,
+                                ifelse("MISSED" %in% unlist(strsplit(pff_KICKRESULT, " ")), 0, NA)))
+
+fieldGoalSelect = fieldGoalData%>%
+  filter(!is.na(fieldGoalMake))%>%
+  select(pff_FIELDPOSITION, fieldGoalMake)
+
+# Filter out abnormalities/data entry errors
+fieldGoalSelect <- fieldGoalSelect%>%
+  filter(pff_FIELDPOSITION >= 40)
+
+ggplot(fieldGoalSelect, aes(x=pff_FIELDPOSITION, y=fieldGoalMake)) + geom_point() + geom_smooth()
+
+# Create a an additive logistic regression model for Made Field Goals
+library(mgcv)
+fg.make.gam <- gam(fieldGoalMake ~ s(pff_FIELDPOSITION), 
+                   family = "binomial", 
+                   method = "REML", 
+                   data = fieldGoalSelect)
+summary(fg.make.gam)
+
+# Converted to probabilities, the intercept is (If field pos is at its average value, probability of make is .938)
+prob_inter<-plogis(coef(fg.make.gam)[1])
+
+# plot the model
+plot(fg.make.gam, pages = 1, trans = plogis, shift =coef(fg.make.gam)[1], seWithMean = TRUE)
+
+# predict using model
+pff_FIELDPOSITION <- seq(40,97, by=.5)
+pff_FIELDPOSITION<- unlist(pff_FIELDPOSITION)
+pff_FIELDPOSITION<-as.data.frame(pff_FIELDPOSITION)
+test_predictions <- predict(fg.make.gam,
+                            type = "link",
+                            newdata = pff_FIELDPOSITION,
+                            se.fit = T) 
+
+# Function for FG Make
+FG_Make<-function(FP){
+  pff_FIELDPOSITION <- FP
+  pff_FIELDPOSITION<- unlist(pff_FIELDPOSITION)
+  pff_FIELDPOSITION<-as.data.frame(pff_FIELDPOSITION)
+  prediction <- predict(fg.make.gam,
+                        type = "response",
+                        newdata = pff_FIELDPOSITION)
+  samp <- runif(1,0,1)
+  if(samp < prediction){
+    return(3)
+  }else{
+    return(0)
+    }
+}
+```
+
+```{r}
+# Modeling Punt Returns
+
+# Punt Data
+Punt_Data <- CFB_data %>%
+  dplyr::select( pff_PLAYID,pff_OFFTEAM, pff_DEFTEAM,pff_FIELDPOSITION, pff_DRIVEPLAY, pff_DOWN, pff_DISTANCE, pff_DRIVEENDEVENT, pff_DRIVEENDPLAYNUMBER, pff_GARBAGETIME, pff_KICKRESULT, pff_KICKYARDS,pff_GAINLOSS, pff_DRIVEENDEVENT) %>%
+  mutate(pff_KICKRESULT = as.character(pff_KICKRESULT),
+         pff_DRIVEENDEVENT = as.character(pff_DRIVEENDEVENT)) %>% 
+  rowwise() %>%
+  mutate(fakeKick = ifelse("FAKE" %in% unlist(strsplit(pff_KICKRESULT, " ")),
+                           TRUE, FALSE)) %>%
+  filter(pff_DOWN > 0)
+
+lagEndEvent <- lag(Punt_Data$pff_DRIVEENDEVENT)
+
+Punt_Data$lagDriveEndEvent <- lagEndEvent
+
+Punt_Data <- Punt_Data %>%
+  filter(lagDriveEndEvent == "PUNT" & pff_KICKRESULT != "") %>%
+  select(pff_PLAYID, pff_OFFTEAM, pff_DEFTEAM, pff_FIELDPOSITION, pff_DOWN, pff_DISTANCE, pff_GARBAGETIME,pff_KICKYARDS,fakeKick)
+
+Punts <- Punt_Data %>%
+  filter(fakeKick == FALSE)
+Fakes <- Punt_Data  %>%
+  filter(fakeKick == TRUE)
+
+PuntYards <- Punts$pff_KICKYARDS %>%
+  na.omit()
+
+# Punt Return Mixture Model
+Punt_mixmdl <- normalmixEM(PuntYards, k = 2)
+
+# Punt Return MM Plot
+Punt_Complete_MM<-data.frame(x = Punt_mixmdl$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(Punt_mixmdl$mu[1], Punt_mixmdl$sigma[1], lam = Punt_mixmdl$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(Punt_mixmdl$mu[2], Punt_mixmdl$sigma[2], lam = Punt_mixmdl$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(Punt_mixmdl$mu[3], Punt_mixmdl$sigma[3], lam = Punt_mixmdl$lambda[3]),
+                colour = "green", lwd = 1.5) +
+  ylab("Density")
+
+Punt_Complete_MM
+
+#If Punt Function
+If_Punt<-function(){
+  samp<-runif(1,min = 0,max = 1)
+  if(samp<=Punt_mixmdl$lambda[1]){
+    puntDistance <- rnorm(1,Punt_mixmdl$mu[1],Punt_mixmdl$sigma[1])
+  }else{
+    puntDistance <- rnorm(1,Punt_mixmdl$mu[2],Punt_mixmdl$sigma[2])
+  }
+  return(round(puntDistance))
+}
+
+#Check Punt Function
+test_punt <-as.data.frame(replicate(8615,If_Punt()))
+colnames(test_punt)<-"PuntYards"
+test_Punt_hist<- ggplot(test_punt, aes(x=PuntYards))+geom_histogram(binwidth = 1)
+test_Punt_hist
+Punt_Yards<-ggplot(Punts, aes(x = pff_KICKYARDS)) + geom_histogram(binwidth = 1)
+Punt_Yards
+test_punt_hists<-ggplot(test_punt, aes(x=PuntYards)) + geom_histogram(binwidth = 1) + geom_histogram(data = Punts, aes(x=pff_KICKYARDS),binwidth = 1, color = "red",alpha = .2)
+test_punt_hists
+
+```
+
+```{r}
+### Kick Data ###
+Kick_Data <- CFB_data %>%
+dplyr::select( pff_FIELDPOSITION, pff_KICKTYPE,pff_KICKRESULT) %>%
+rowwise()
+
+Kick_Data$KickFieldPos <- lead(Kick_Data$pff_FIELDPOSITION)
+
+ko_types <- c("D", "F", "K", "P", "Q") #different types of kickoffs
+onside_types <- c("O", "S") #types of onside kickoffs
+Touchbacks <- Kick_Data %>%
+  filter(pff_KICKRESULT == "TOUCHBACK"& pff_KICKRESULT != "FAIR CATCH")
+
+KO_Data <- Kick_Data %>%
+  filter(pff_KICKTYPE %in% ko_types)
+KO_Data <- KO_Data%>%
+  filter( pff_KICKRESULT != "TOUCHBACK" & pff_KICKRESULT != "FAIR CATCH" & KickFieldPos != 35 & KickFieldPos != 97)
+  
+
+ReturnYards <- KO_Data$KickFieldPos %>%
+na.omit()
+
+ggplot(KO_Data, aes(x = KickFieldPos)) + geom_histogram(bins = 99)
+
+# Kickoff Return Mixture Model
+KOReturn_mixmdl <- normalmixEM(ReturnYards, k = 2)
+
+# Kickoff Return MM Plot
+Kick_Complete_MM<-data.frame(x = KOReturn_mixmdl$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(Punt_mixmdl$mu[1], Punt_mixmdl$sigma[1], lam = Punt_mixmdl$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(Punt_mixmdl$mu[2], Punt_mixmdl$sigma[2], lam = Punt_mixmdl$lambda[2]),
+                colour = "blue", lwd = 1.5)  +
+  ylab("Density")
+
+Kick_Complete_MM
+
+
+prob_KO_Touchback <- nrow(Touchbacks)/10215
+
+If_KO<-function(){
+  samp <-runif(1,min = 0,max = 1)
+  if (samp <= prob_KO_Touchback){
+    KO_Return_Yardline <- 25
+  }else{
+    samp<-runif(1,min = 0,max = 1)
+    if(samp<=KOReturn_mixmdl$lambda[1]){
+      KO_Return_Yardline <- rnorm(1,KOReturn_mixmdl$mu[1],KOReturn_mixmdl$sigma[1])
+    }else{
+      KO_Return_Yardline <- rnorm(1,KOReturn_mixmdl$mu[2],KOReturn_mixmdl$sigma[2])
+      }
+    }
+  return(round(KO_Return_Yardline))
+}
+
+ReturnYards<-data.frame(ReturnYards)
+colnames(ReturnYards) <- "R_yg"
+```
+
+```{r}
+## Fumble Data ##
+CFB_fumble = CFB_data %>%
+    rowwise() %>%
+  mutate(pff_FUMBLE = as.character(pff_FUMBLE), pff_FUMBLERECOVERY = as.character(pff_FUMBLERECOVERY),
+         fumblingTeam = unlist(strsplit(pff_FUMBLE, " "))[1],
+         recoveringTeam = unlist(strsplit(pff_FUMBLERECOVERY, " "))[1],
+         fumbleCommitted = ifelse(fumblingTeam != recoveringTeam, 1, 0)) %>%
+  select(pff_DOWN, pff_DISTANCE, pff_FIELDPOSITION, fumbleCommitted) %>%
+  filter(pff_DOWN > 0) %>%
+  mutate(fumbleCommitted = ifelse(is.na(fumbleCommitted), 0, fumbleCommitted))
+
+# Fumble Probability Model
+fumbleModel <- glm(fumbleCommitted~., family="binomial", data=CFB_fumble)
+
+## Fumble Prediction Function ##
+fumblePredict = function(down, distance, yardline){
+  predTibble = tibble(pff_DOWN = down, pff_DISTANCE = distance, pff_FIELDPOSITION = yardline)
+  lOdds = predict(fumbleModel, predTibble)
+  prob = exp(lOdds)/(1+exp(lOdds))
+  samp = runif(1)
+  return(samp < prob)
+}
+```
+
+```{r}
+# Fumble data for return yards MM
+FumblePlays = P_R %>%
+  filter(pff_FUMBLE != "") %>%
+  select(pff_PLAYID, pff_FORCEDFUMBLE, pff_FUMBLE, pff_FUMBLERECOVERY, pff_FIELDPOSITION, pff_TOUCHDOWN)
+
+allPlaysFieldPosition = CFB_data %>%
+  select(pff_PREVIOUSPFFPLAYID, pff_FIELDPOSITION) %>%
+  rename(afterFumbleFP = pff_FIELDPOSITION)
+
+Fumble = inner_join(FumblePlays,
+               allPlaysFieldPosition,
+               by = c("pff_PLAYID" = "pff_PREVIOUSPFFPLAYID"))
+
+FumbleDistance = Fumble %>%
+  rowwise() %>%
+  mutate(pff_FUMBLE = as.character(pff_FUMBLE), pff_FUMBLERECOVERY = as.character(pff_FUMBLERECOVERY),
+         fumblingTeam = unlist(strsplit(pff_FUMBLE, " "))[1],
+         recoveringTeam = unlist(strsplit(pff_FUMBLERECOVERY, " "))[1]) %>%
+  filter(fumblingTeam != recoveringTeam) %>%
+  mutate(yards = ifelse(pff_TOUCHDOWN != "", pff_FIELDPOSITION - (100- afterFumbleFP) , pff_FIELDPOSITION))
+
+# Mixture Model for Fumbles (EM)
+Fumble_return <-FumbleDistance$yards
+Fumble_return<-na.omit(Fumble_return)
+set.seed(1)
+mixmdl_Fumble <- normalmixEM(Fumble_return, k = 2)
+Fumble_mm<- data.frame(x = mixmdl_Fumble$x) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_Fumble$mu[1], mixmdl_Fumble$sigma[1], lam = mixmdl_Fumble$lambda[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(mixmdl_Fumble$mu[2], mixmdl_Fumble$sigma[2], lam = mixmdl_Fumble$lambda[2]),
+                colour = "blue", lwd = 1.5) +
+  ylab("Density")
+Fumble_mm
+```
+
+```{r}
+#Fumble Function
+If_Fumble<-function(){
+  samp<-runif(1,min = 0,max = 1)
+  if(samp<=mixmdl_Fumble$lambda[1]){
+    YG <- rnorm(1,mixmdl_Fumble$mu[1],mixmdl_Fumble$sigma[1])
+  }else{
+    YG <- rnorm(1,mixmdl_Fumble$mu[2],mixmdl_Fumble$sigma[2])
+  }
+  return(round(YG))
+}
+```
+
+
+
+```{r}
+## 2 Point-Conversion Data ##
+twoPointData = CFB_data %>%
+  filter(pff_FIELDPOSITION == 97) %>%
+  select(pff_GAINLOSS) %>%
+  na.omit()
+
+twoPointData = twoPointData %>%
+  mutate(success = ifelse(pff_GAINLOSS == 2, 1, 0))
+
+successRate2P = sum(twoPointData$success)/length(twoPointData$success)
+
+## PAT/2pt Conversion Function ##
+# When a team scores a touchdown in the simulation, this function determines if there was a successful PAT, a missed PAT, or a 2pt conversion attempt
+scoreSimFunction = function(){
+   goFor2 = runif(1)
+      if (goFor2 <.05){
+        TwoPointAttempt = runif(1)
+        if (TwoPointAttempt < successRate2P){
+          score = 8
+        }
+        else{
+          score = 6
+        }
+      }
+      else{
+        PAT_Attempt = FG_Make(97)
+        if(PAT_Attempt == 3){
+          score = 7
+        } # insert 2-point conversion with RZ function
+        else{
+          score = 6
+          }
+        
+      }
+   return(score)
+}
+```
+
+```{r}
+### SIMULATION ###
+# Simulation runs until one team scores. Multiple runs of simulation can be joined together 
+next_score_results = tibble(down = NA, distance = NA, yardline = NA, yardsGained = NA,score = 0, fgTry = NA, 
+                              t1poss = NA,Turnover = "No", Turnover_yg = NA)
+
+next_score_function<-function(n){
+  down = 1
+  distance = 10
+  yardline = If_KO()
+  score = 0
+  t1poss = sample(c(0, 1), 1)
+  while(score == 0){
+    # If 1st and goal, changes YTG to 100 - current yardline
+    if(down == 1 & yardline > 90){
+      distance = 100 - yardline
+      }
+    if(down == 4 & yardline >= 60){
+      # Team Attempts field goal. If successful, simulation stops, if miss, other team get possession
+      fgAttempt = FG_Make(yardline)
+      if(fgAttempt == 3){
+        results = c(down, distance, yardline, NA, fgAttempt, "MAKE", t1poss,"No",NA)
+        next_score_results = rbind(next_score_results, results)
+        break
+        }
+      else{
+        results = c(down, distance, yardline, NA, score, "MISS", t1poss, "No",NA)
+        next_score_results = rbind(next_score_results, results)
+        down = 1
+        distance = 10
+        yardline = 100 - yardline
+        t1poss = ifelse(t1poss == 1, 0, 1)
+        next
+        }
+    }
+    if(down == 4 & yardline < 60 & distance > 3){
+      # Team attempts punt and possession flips
+      puntAttempt = If_Punt()
+      results = c(down, distance, yardline, NA, score, "PUNT", t1poss, "No",NA)
+      next_score_results = rbind(next_score_results, results)
+      down = 1
+      distance = 10
+      if((puntAttempt + yardline) >= 100){
+        yardline = 20
+      }
+      else{
+        yardline = 100 - (yardline + puntAttempt)
+      }
+      t1poss = ifelse(t1poss == 1, 0, 1)
+      next
+    }
+    if(yardline >= 80){
+      # If offense is in redzone, yards gained selected from the Redzone MM
+      ydsGained <- round(Yards_Gained_function_RZ())
+      # Fumble prediction function
+      fumble = fumblePredict(down, distance, yardline)
+      # A ydsGained value greater than 100 indicates an interception occurred. The value is divided by 1000 to get the true interception return yards (see line _)
+      if(abs(ydsGained) > 100){
+        Turnover = "INT"
+        Turnover_yards = round(ydsGained/1000)
+        ydsGained = NA
+        # Accounts for Pick-6 and breaks simulation
+        if (100 - (yardline - Turnover_yards) >=100){
+            score = scoreSimFunction()*-1
+            results = c(down, distance, yardline,ydsGained, score, NA, t1poss, Turnover, Turnover_yards)
+            next_score_results = rbind(next_score_results, results)
+            break
+        }
+        results = c(down, distance, yardline, ydsGained, score, NA, t1poss, Turnover, Turnover_yards)
+        next_score_results = rbind(next_score_results, results)
+        down = 1
+        distance = 10
+        yardline = 100 - (yardline - Turnover_yards)
+        if (yardline <= 0){
+          yardline = 20
+        }
+        t1poss = ifelse(t1poss == 1, 0, 1)
+        next
+      }
+      # Simulates fumble during play
+      if (fumble == TRUE){
+        Turnover = "FUMBLE"
+        Turnover_yards = If_Fumble()
+        # Accounts for scoop and scores and breaks simulation
+        if (yardline + ydsGained - Turnover_yards <= 0){
+            score = scoreSimFunction()*-1
+            results = c(down, distance, yardline,NA, score, NA, t1poss, Turnover, Turnover_yards)
+            next_score_results = rbind(next_score_results, results)
+            break
+        }
+        results = c(down, distance, yardline, ydsGained, score, NA, t1poss, Turnover, Turnover_yards)
+        next_score_results = rbind(next_score_results, results)
+        down = 1
+        distance = 10
+        yardline = 100 - (yardline + ydsGained - Turnover_yards)
+        if (yardline <= 0){
+          yardline = 20
+        }
+        t1poss = ifelse(t1poss == 1, 0, 1)
+        next
+      }
+      if(ydsGained > 100 - yardline){
+        ydsGained <- 100 - yardline
+        }
+    }else{
+      # Simulation for plays outside of red zone
+      ydsGained <- round(Yards_Gained_function())
+      # Fumble prediction function
+      fumble = fumblePredict(down, distance, yardline)
+      # Simulation for Ints
+      if(abs(ydsGained) > 100){
+        Turnover = "INT"
+        Turnover_yards = round(ydsGained/1000)
+        ydsGained = NA
+        # Accounts for pick 6
+        if (100 - (yardline - Turnover_yards) >=100){
+            score = scoreSimFunction()*-1
+            results = c(down, distance, yardline,ydsGained, score, NA, t1poss, Turnover, Turnover_yards)
+            next_score_results = rbind(next_score_results, results)
+            break
+        }
+        results = c(down, distance, yardline, ydsGained, score, NA, t1poss, Turnover, Turnover_yards)
+        next_score_results = rbind(next_score_results, results)
+        down = 1
+        distance = 10
+        yardline = 100 - (yardline - Turnover_yards)
+        if (yardline <= 0){
+          yardline = 20
+        }
+        t1poss = ifelse(t1poss == 1, 0, 1)
+        next
+      }
+      # Fumble simulation
+      if (fumble == TRUE){
+        Turnover = "FUMBLE"
+        Turnover_yards = If_Fumble()
+        # Accounts for scoop and score
+        if (yardline + ydsGained - Turnover_yards <= 0){
+            score = scoreSimFunction()*-1
+            results = c(down, distance, yardline,NA, score, NA, t1poss, Turnover, Turnover_yards)
+            next_score_results = rbind(next_score_results, results)
+            break
+        }
+        results = c(down, distance, yardline, ydsGained, score, NA, t1poss, Turnover, Turnover_yards)
+        next_score_results = rbind(next_score_results, results)
+        down = 1
+        distance = 10
+        yardline = 100 - (yardline + ydsGained - Turnover_yards)
+        if (yardline <= 0){
+          yardline = 20
+        }
+        t1poss = ifelse(t1poss == 1, 0, 1)
+        next
+      }
+      if(ydsGained > 100 - yardline){
+        ydsGained <- 100 - yardline
+      }
+    }
+    # Detects when a team has scored (reaches 100+ yardline) and simulates score value using scoreSimFunction()
+    if(yardline + ydsGained >= 100){
+        score = scoreSimFunction()
+        results = c(down, distance, yardline,ydsGained, score, NA, t1poss, "No", NA)
+        next_score_results = rbind(next_score_results, results)
+        break
+    }
+    # Detects when a safety occurs
+    if(yardline <= 0){
+        score = 2
+        results = c(down, distance, yardline, ydsGained, score, NA, t1poss, "No", NA)
+        next_score_results = rbind(next_score_results, results)
+        break
+    }
+    results = c(down, distance, yardline, ydsGained, score, NA, t1poss, "No", NA)
+    next_score_results = rbind(next_score_results, results)
+    # Detects when offense gains a first down
+    if(ydsGained >= distance){
+      down = 1
+      distance = 10
+      yardline = ydsGained + yardline
+    }
+    # Finds new down and distance after a play when first down is not gained, flips possession for turnover on downs
+    else{
+      distance = distance - ydsGained
+      down = down + 1
+      yardline = ydsGained + yardline
+      if(down > 4){
+        t1poss = ifelse(t1poss == 1, 0, 1)
+        yardline = 100 - yardline
+        down = 1
+        distance = 10
+      }
+    }
+  }
+  results = next_score_results
+  
+  return(results)
+}
+
+
+
+# Create a dataset of simulated drive
+runs <- 1:1000
+results <- lapply(runs,next_score_function)
+expected_points<- do.call(rbind, results)
+
+# Add a next Score Column to Expected Points
+Scores <- expected_points$score
+score_indexes <- which(Scores != 0)
+Scoring_plays <- Scores[score_indexes]
+Next_Scores <- NULL
+n<-1
+for(i in 1:length(Scores)){
+  if(Scores[i] == 0){
+    next_score = Scoring_plays[n]
+    Next_Scores<- c(Next_Scores,next_score)
+  }else{
+    next_score = Scores[i]
+    Next_Scores<- c(Next_Scores,next_score)
+    n <- n + 1
+  }
+}
+
+Next_Scores = as.numeric(Next_Scores)
+
+expected_points <- cbind(expected_points, Next_Scores)
+expected_points
+
+# Check Simulation
+expected_points$yardsGained <- as.numeric(expected_points$yardsGained)
+test_data <- as.data.frame(sample(CFB_data$pff_GAINLOSS, nrow(expected_points),replace = T))
+colnames(test_data)<-"YG"
+ggplot(expected_points, aes(x=yardsGained)) + geom_histogram(binwidth = 1)
+ggplot(test_data, aes(x=YG)) + geom_histogram(binwidth = 1)
+test_sim_hist<-ggplot(expected_points, aes(x=yardsGained)) + geom_histogram(binwidth = 1) + geom_histogram(data = test_data, aes(x=YG),binwidth = 1, color = "red",alpha = .2)
+test_sim_hist
+```
+
+```{r}
+### SIMULATION DATA ###
+library(glmnet)
+
+epDataSetup = function(ep){
+    epData = ep %>%
+    select(down, distance, yardline, Next_Scores, t1poss, score)
+  
+  epData = epData %>%
+    mutate_if(is.character,as.numeric)
+  
+  scoreIndices <- which(epData$score != 0)
+  scores = c(epData$score)
+  scoreList = scores[scoreIndices]
+  teams = c(epData$t1poss)
+  teamList = teams[scoreIndices]
+  
+  
+  newScores = c()
+  scoreTeams = c()
+  n = 1
+  for(i in 1:length(epData$score)){
+    if (scores[i] == 0){
+      value = scoreList[n]
+      newScores = c(newScores, value)
+      team = teamList[n]
+      scoreTeams = c(scoreTeams, team)
+    }
+    else {
+      value = scoreList[n]
+      newScores = c(newScores, value)
+      team = teamList[n]
+      scoreTeams = c(scoreTeams, team)
+      n = n + 1
+    }
+  }
+  
+  epCombined = cbind(epData, newScores, scoreTeams)
+  
+  epFinal = epCombined %>%
+    mutate(Next_Scores = ifelse(t1poss == scoreTeams, Next_Scores, Next_Scores*-1),
+           Next_Scores = ifelse(Next_Scores == 2, -2, Next_Scores)) %>%
+    select(down, distance, yardline, Next_Scores) %>%
+    na.omit()
+  
+  return(epFinal)
+}
+
+epFinal = epDataSetup(expected_points)
+
+epX = epFinal %>% 
+  select(-Next_Scores) %>% 
+  glmnet::makeX()
+
+epY = epFinal %>% 
+  select(Next_Scores) %>%
+  as.matrix()
+
+## EXPECTED POINTS MODEL ##
+cvfit = cv.glmnet(epX, epY, nfolds=10, alpha=1)
+coef(cvfit,s='lambda.min')
+```
+
+```{r}
+# Create a dataset of simulated drive
+runs <- 1:2000
+results <- lapply(runs,next_score_function)
+expected_points<- do.call(rbind, results)
+
+# Add a next Score Column to Expected Points
+Scores <- expected_points$score
+score_indexes <- which(Scores != 0)
+Scoring_plays <- Scores[score_indexes]
+Next_Scores <- NULL
+n<-1
+for(i in 1:length(Scores)){
+  if(Scores[i] == 0){
+    next_score = Scoring_plays[n]
+    Next_Scores<- c(Next_Scores,next_score)
+  }else{
+    next_score = Scores[i]
+    Next_Scores<- c(Next_Scores,next_score)
+    n <- n + 1
+  }
+}
+
+Next_Scores = as.numeric(Next_Scores)
+
+expected_pointsTest <- cbind(expected_points, Next_Scores)
+
+epFinalTest = epDataSetup(expected_pointsTest)
+
+epXtest = epFinalTest %>% 
+  select(-Next_Scores) %>% 
+  glmnet::makeX()
+
+yhat_min = predict(cvfit, newx = epXtest, s="lambda.min", type="response")
+```
+
+```{r}
+epa = cbind(epFinalTest, na.omit(expected_pointsTest$t1poss), yhat_min) %>%
+  rename(EP = `1`, t1poss = `na.omit(expected_pointsTest$t1poss)`)
+
+indices = which(!is.na(expected_pointsTest$down))
+
+epa = cbind(epa, score = as.numeric(expected_pointsTest$score[indices]),
+            yardsGained = as.numeric(expected_pointsTest$yardsGained[indices]),
+         kick = as.character(expected_pointsTest$fgTry[indices]),
+         turnover = (expected_pointsTest$Turnover[indices]),
+         turnover_yg = as.numeric(expected_pointsTest$Turnover_yg[indices]))
+
+epa = epa %>%
+  mutate(driveEndingPlay = ifelse(score != 0 | !is.na(kick) | turnover != "No", 1, 0))
+
+leadEP = c(epa$EP[-1], NA)
+
+
+epa = cbind(epa, nextEP = leadEP)
+
+epa = epa %>%
+  mutate(EPA = nextEP - EP,
+         EPA = ifelse(driveEndingPlay == 1, NA, EPA))
+
+epaFinal = epa %>%
+  select(down, distance, yardline, yardsGained, EPA)
+epaFinal       
+```
+
+
+```{r}
+## EXPECTED POINTS TABLE ##
+
+# 1st Down #
+first_down <- rep(1,100)
+distance<- c(10:20)
+Field_Position <-c(1:99)
+
+ffillv <- function(i){
+  rep(Field_Position[i], 11)
+}
+FP<-c(sapply(seq_len(length(Field_Position)), ffillv))
+
+first_down_prediction <- cbind(first_down,distance,FP)
+first_down_prediction<- as.data.frame(first_down_prediction)
+
+first_down_prediction<-first_down_prediction %>%
+  filter(distance <= (100-FP))
+# for(i in 1:length(first_down_prediction)){
+#   if(first_down_prediction$distance[i] > (100 - first_down_prediction$FP[i])){
+#     first_down_prediction[-i,]
+# }}
+# first_down_prediction<-rbind(first_down_prediction, c(1,1,99))
+first_down_prediction <- first_down_prediction %>%
+  glmnet::makeX()
+  
+first_down_table <- predict(cvfit, newx = first_down_prediction, s="lambda.min", type="response")
+first_down_table <- cbind(first_down_prediction,first_down_table)
+first_down_table <- as.data.frame(first_down_table)
+colnames(first_down_table)<-c("Down","Distance","FP","EP")
+
+first_down_table1<-first_down_table %>%
+  group_by(Distance) %>%
+  pivot_wider(names_from = Distance,values_from = EP)
+first_down_table
+first_down_table1
+```
+
+```{r}
+# 2nd Down #
+second_down <- rep(2,100)
+distance2<- c(1:20)
+Field_Position2 <-c(1:99)
+
+ffillv <- function(i){
+  rep(Field_Position2[i], 20)
+}
+FP2<-c(sapply(seq_len(length(Field_Position2)), ffillv))
+
+second_down_prediction <- cbind(second_down,distance2,FP2)
+second_down_prediction<- as.data.frame(second_down_prediction)
+
+second_down_prediction<-second_down_prediction %>%
+  filter(distance2 <= (100-FP2))
+
+second_down_prediction <- second_down_prediction %>%
+  glmnet::makeX()
+  
+second_down_table <- predict(cvfit, newx = second_down_prediction, s="lambda.min", type="response")
+second_down_table <- cbind(second_down_prediction, second_down_table)
+second_down_table<- as.data.frame(second_down_table)
+colnames(second_down_table)<-c("Down","Distance","FP","EP")
+
+second_down_table1<-second_down_table %>%
+  group_by(Distance) %>%
+  pivot_wider(names_from = Distance,values_from = EP)
+second_down_table
+second_down_table1
+```
+
+```{r}
+# 3rd Down #
+third_down <- rep(3,100)
+distance2<- c(1:20)
+Field_Position2 <-c(1:99)
+
+ffillv <- function(i){
+  rep(Field_Position2[i], 20)
+}
+FP2<-c(sapply(seq_len(length(Field_Position2)), ffillv))
+
+third_down_prediction <- cbind(third_down,distance2,FP2)
+third_down_prediction<- as.data.frame(third_down_prediction)
+
+third_down_prediction<-third_down_prediction %>%
+  filter(distance2 <= (100-FP2))
+
+third_down_prediction <- third_down_prediction %>%
+  glmnet::makeX()
+  
+third_down_table <- predict(cvfit, newx = third_down_prediction, s="lambda.min", type="response")
+third_down_table <- cbind(third_down_prediction, third_down_table)
+
+third_down_table<- as.data.frame(third_down_table)
+colnames(third_down_table)<-c("Down","Distance","FP","EP")
+
+third_down_table1<-third_down_table %>%
+  group_by(Distance) %>%
+  pivot_wider(names_from = Distance,values_from = EP)
+third_down_table
+third_down_table1
+```
+
+```{r}
+EPA<-function(down,distance,Field_Position,Yards_Gain, possessionBefore = TRUE, possessionAfter = TRUE, turnover = FALSE){
+  original_state <- c(down,distance,Field_Position)
+  if(Yards_Gain  >= distance){
+    down = 1
+    distance = 10
+    Field_Position = Field_Position + Yards_Gain
+  }else if(down == 4 & Yards_Gain < distance){
+    down = 1
+    distance = 10
+    Field_Position = (100 - (Field_Position + Yards_Gain))
+    possessionAfter = FALSE
+  }else if(turnover == TRUE){
+    down = 1
+    distance = 10
+    Field_Position = ((100 - (Field_Position + Yards_Gain)))
+    possessionAfter = FALSE
+  }else{
+    down = down + 1
+    distance = distance - Yards_Gain
+    Field_Position = Field_Position + Yards_Gain
+  }
+  new_state <- c(down,distance,Field_Position)
+  print(new_state)
+  states<-rbind(original_state,new_state)
+  states <- as.data.frame(states)
+  
+  states <- states %>%
+    glmnet::makeX()
+  EP<- predict(cvfit, newx = states, s="lambda.min", type="response")
+  states<-cbind(states,EP)
+  possessionTracker = c(possessionBefore, possessionAfter)
+  states = cbind(states, possessionTracker)
+  states<- as.data.frame(states)
+  colnames(states)<-c("Down","Distance","FP","EP", "Possession")
+  print(states)
+  
+  if(states[1,5] != states[2,5]){
+    EP_Added <- - states[2,4] - states[1,4]
+  }
+  else{
+    EP_Added<- states[2,4] - states[1,4]
+  }
+  EP_Added
+}
+EPA(1,10,20,5)
+EPA(1,10,20,5,turnover = TRUE)
+EPA(4,10,45,9)
+```
+
